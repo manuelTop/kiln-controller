@@ -26,3 +26,16 @@ pause a run (maintain current temperature until resume)
 resume a paused run
     
     curl -d '{"cmd":"resume"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+start pid autotune (runs kiln-tuner.py in background; kiln must be idle)
+
+    curl -d '{"cmd":"autotune_start","target_temp":400,"tangent_divisor":8}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+check pid autotune status/output
+
+    curl -d '{"cmd":"autotune_status"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+stop a running pid autotune
+
+    curl -d '{"cmd":"autotune_stop"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
