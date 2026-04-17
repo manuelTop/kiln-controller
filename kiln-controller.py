@@ -5,6 +5,9 @@ import os
 import sys
 import logging
 import json
+import subprocess
+import re
+import threading
 
 import bottle
 import gevent
@@ -28,6 +31,85 @@ profile_path = config.kiln_profiles_directory
 from oven import SimulatedOven, RealOven, Profile
 from ovenWatcher import OvenWatcher
 
+class AutoTuneManager():
+    def __init__(self):
+        self.process = None
+        self.thread = None
+        self.lines = []
+        self.result = {}
+        self.returncode = None
+        self.started_at = None
+        self.finished_at = None
+
+    def is_running(self):
+        return self.process is not None and self.process.poll() is None
+
+    def _reader(self):
+        pid_pattern = re.compile(r'^pid_(kp|ki|kd)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$')
+
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            clean = line.rstrip()
+            self.lines.append(clean)
+            if len(self.lines) > 500:
+                self.lines = self.lines[-500:]
+            match = pid_pattern.match(clean)
+            if match:
+                self.result[match.group(1)] = float(match.group(2))
+
+        self.process.wait()
+        self.returncode = self.process.returncode
+        self.finished_at = int(time.time())
+
+    def start(self, target_temp=400, tangent_divisor=8):
+        if self.is_running():
+            return False
+
+        self.lines = []
+        self.result = {}
+        self.returncode = None
+        self.started_at = int(time.time())
+        self.finished_at = None
+
+        cmd = [
+            sys.executable,
+            os.path.join(script_dir, 'kiln-tuner.py'),
+            '-t', str(target_temp),
+            '-d', str(tangent_divisor),
+        ]
+
+        self.process = subprocess.Popen(
+            cmd,
+            cwd=script_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+
+        self.thread = threading.Thread(target=self._reader, daemon=True)
+        self.thread.start()
+        return True
+
+    def stop(self):
+        if not self.is_running():
+            return False
+        self.process.terminate()
+        return True
+
+    def status(self):
+        return {
+            'running': self.is_running(),
+            'started_at': self.started_at,
+            'finished_at': self.finished_at,
+            'returncode': self.returncode,
+            'result': self.result,
+            'output': self.lines[-40:],
+        }
+
+
 app = bottle.Bottle()
 
 if config.simulate == True:
@@ -39,6 +121,8 @@ else:
 ovenWatcher = OvenWatcher(oven)
 # this ovenwatcher is used in the oven class for restarts
 oven.set_ovenwatcher(ovenWatcher)
+
+autotune = AutoTuneManager()
 
 @app.route('/')
 def index():
@@ -111,6 +195,29 @@ def handle_api():
         if hasattr(oven,'pid'):
             if hasattr(oven.pid,'pidstats'):
                 return json.dumps(oven.pid.pidstats)
+
+    if bottle.request.json['cmd'] == 'autotune_start':
+        log.info("api autotune_start command received")
+        if oven.state != 'IDLE':
+            return { "success" : False, "error" : "cannot run autotune while kiln schedule is active" }
+
+        target_temp = bottle.request.json.get('target_temp', 400)
+        tangent_divisor = bottle.request.json.get('tangent_divisor', 8)
+
+        if not autotune.start(target_temp=target_temp, tangent_divisor=tangent_divisor):
+            return { "success" : False, "error" : "autotune is already running" }
+
+        return { "success" : True, "autotune" : autotune.status() }
+
+    if bottle.request.json['cmd'] == 'autotune_stop':
+        log.info("api autotune_stop command received")
+        if not autotune.stop():
+            return { "success" : False, "error" : "autotune is not running" }
+        return { "success" : True, "autotune" : autotune.status() }
+
+    if bottle.request.json['cmd'] == 'autotune_status':
+        log.info("api autotune_status command received")
+        return { "success" : True, "autotune" : autotune.status() }
 
     return { "success" : True }
 
