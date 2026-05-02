@@ -413,11 +413,11 @@ class Oven(threading.Thread):
                 self.start_time = self.get_start_time()
                 self.catching_up = True;
                 return
-            # kiln too hot, wait for it to cool down
+            # kiln too hot should not pause the schedule clock.
+            # the controller already forces 0% heat when outside the PID
+            # control window, so continue running and let it naturally cool.
             if temp - self.target > config.pid_control_window:
-                log.info("kiln must catch up, too hot, shifting schedule")
-                self.start_time = self.get_start_time()
-                self.catching_up = True;
+                self.catching_up = False;
                 return
             self.catching_up = False;
 
